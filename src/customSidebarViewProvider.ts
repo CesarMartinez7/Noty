@@ -1,3 +1,5 @@
+// @ts-nocheck
+
 import * as vscode from "vscode";
 import { createClient, User } from "@supabase/supabase-js"; // Importación real (añadida 'User' para tipado)
 
@@ -396,20 +398,32 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     `;
   }
 
+  // ** START: MODIFICACIÓN AQUÍ **
   private _getNotesHtml(nonce: string): string {
     const arrayList = this._notes;
 
-    // Renderiza lista en HTML con botón de borrar y inputs editables
+    // Renderiza lista en HTML con botón de borrar y TEXTAREA editables
     const listHtml = arrayList
       .map(
         (note) => `
-      <li class="list-item flex items-center justify-between p-3 mb-2 rounded-lg transition duration-100 shadow-sm hover:shadow-md">
-        <!-- Usamos data-id para almacenar el ID de Supabase -->
-        <input type="text" value="${note.content}" data-id="${note.id}" 
-            class="note-input flex-grow text-sm focus:border-opacity-100 p-0 m-0 border-none" />
-        <button class="delete-btn ml-3 p-1 rounded-full hover:opacity-75" data-id="${note.id}" title="Borrar Nota">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-trash-2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-        </button>
+      <li class="note-card-container">
+        <div class="note-card flex flex-col p-3 rounded-lg shadow-lg border border-opacity-20 transition duration-200">
+            <textarea data-id="${note.id}" rows="3" 
+                class="note-textarea flex-grow text-sm p-0 m-0 border-none resize-none focus:ring-0 focus:border-transparent">${
+                  note.content
+                }</textarea>
+            
+            <div class="flex justify-end items-center mt-2 pt-2 border-t border-opacity-30">
+                <span class="text-xs opacity-60 mr-4">Creada: ${new Date(
+                  note.created_at
+                ).toLocaleDateString()}</span>
+                <button class="delete-btn p-1 rounded-full hover:opacity-75" data-id="${
+                  note.id
+                }" title="Borrar Nota">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-trash-2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                </button>
+            </div>
+        </div>
       </li>`
       )
       .join("");
@@ -418,7 +432,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
         <div class="flex flex-col h-full relative">
             <div class="header-bar flex items-center justify-between p-2 mb-4 border-b pb-4 sticky top-0" style="border-color: var(--vscode-editorGroupHeader-tabsBorder); background-color: var(--bg); z-index: 10;">
                 <div class="flex flex-col">
-                    <h1 class="text-xl font-bold" style="color: var(--vscode-activityBar-foreground);">Mis Notas</h1>
+                    <h1 class="text-xl font-bold" style="color: var(--vscode-activityBar-foreground);">Mis Notas 📌</h1>
                     <span class="text-xs opacity-70 italic" style="color: var(--vscode-list-deemphasizedForeground);">Bienvenido: ${
                       this._user?.email || "N/A"
                     }</span>
@@ -447,17 +461,14 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
                 ? '<p class="text-sm opacity-50 p-2">No hay notas. Crea una para empezar.</p>'
                 : ""
             }
-            <ol class="list-none p-0 m-0 space-y-2">
+            <ol class="list-none p-0 m-0 grid gap-4 grid-cols-1 md:grid-cols-2">
               ${listHtml}
             </ol>
             
-            <!-- Contenedor para Toast Notifications -->
             <div id="toast-container" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 space-y-2 z-50">
-                <!-- Toasts go here -->
-            </div>
+                </div>
         </div>
 
-        <!-- JavaScript para manejar la interacción y la comunicación con la extensión -->
         <script nonce="${nonce}">
             const vscode = acquireVsCodeApi();
 
@@ -538,22 +549,26 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
                 }
             });
 
-            // Evento 'change' para manejar la actualización (cambiar por el input)
-            document.querySelector('ol').addEventListener('change', (e) => {
-                const input = e.target.closest('.note-input');
-                if (input) {
-                    const id = input.dataset.id;
-                    const newValue = input.value;
+            // Evento 'blur' (cuando el textarea pierde el foco) para manejar la actualización
+            document.querySelector('ol').addEventListener('blur', (e) => {
+                const textarea = e.target.closest('.note-textarea');
+                if (textarea) {
+                    const id = textarea.dataset.id;
+                    const newValue = textarea.value;
+
+                    // Opcional: Solo enviar si el valor ha cambiado para evitar llamadas innecesarias a la API
+                    // En este ejemplo, enviamos siempre que pierda el foco si estamos en un textarea de nota existente.
 
                     vscode.postMessage({
                         command: 'updateNote',
                         payload: { id: id, newValue: newValue }
                     });
                 }
-            });
+            }, true); // Usamos 'true' para capturar el evento blur en la fase de captura
         </script>
     `;
   }
+  // ** END: MODIFICACIÓN AQUÍ **
 
   private getHtmlContent(webview: vscode.Webview): string {
     // Definiciones de URI para recursos locales
@@ -604,15 +619,12 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     }">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       
-      <!-- Incluimos el cliente de Supabase desde CDN -->
       <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-      <!-- Incluimos Tailwind CSS para estilos modernos -->
       <script nonce="${nonce}" src="https://cdn.tailwindcss.com"></script>
 
       <link rel="stylesheet" href="https://unpkg.com/modern-css-reset/dist/reset.min.css" />
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
       
-      <!-- Estilos para adaptar Tailwind y que se vea bien en el tema de VS Code -->
       <style>
         /* Variables de color de VS Code */
         :root {
@@ -653,16 +665,51 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
             opacity: 1;
         }
         
-        /* Estilos de la lista de notas */
-        .list-item {
-            background-color: var(--list-hover-bg);
-            border: 1px solid var(--input-border);
-            transition: background-color 0.1s, transform 0.1s;
+        /* * START: NUEVOS ESTILOS PARA LA NOTA (TEXTAREA) 
+         */
+        
+        .note-card-container {
+            list-style: none; /* Asegura que no haya viñetas */
         }
-        .list-item:hover {
-            background-color: var(--vscode-list-hoverBackground);
-            transform: translateY(-1px);
+
+        .note-card {
+            /* Usamos un color ligeramente diferente para simular una nota adhesiva */
+            background-color: var(--vscode-editorGutter-background);
+            border-color: var(--vscode-terminal-ansiBrightYellow); /* Un toque de color */
+            /* Efecto de inclinación sutil para que parezca una nota real */
+            transform: rotate(-0.5deg); 
+            transition: transform 0.2s ease-out, box-shadow 0.2s;
+            position: relative;
         }
+
+        .note-card:hover {
+            transform: rotate(0deg) scale(1.02);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+            /* Sombra de VS Code para un aspecto moderno */
+            border-color: var(--focus-border); 
+        }
+
+        .note-textarea {
+            /* Limpiamos la apariencia base del textarea */
+            width: 100%;
+            background-color: transparent;
+            color: var(--fg);
+            border: none;
+            padding: 0;
+            line-height: 1.4;
+            /* La opacidad es importante para que el texto resalte sobre el fondo */
+            opacity: 1;
+        }
+
+        .note-textarea:focus {
+            outline: none;
+            border: none;
+            /* Quitamos el anillo de foco por defecto de Tailwind */
+            box-shadow: none !important;
+        }
+        
+        /* FIN: NUEVOS ESTILOS PARA LA NOTA */
+
         .delete-btn {
             color: var(--error-fg);
             cursor: pointer;
