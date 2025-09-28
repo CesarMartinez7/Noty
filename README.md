@@ -1,7 +1,7 @@
 
 # Noty
 
-![](./assets/)
+![](./media/window.png)
 
 Noty es una extensión para Visual Studio Code que permite a los usuarios gestionar y almacenar notas secretas de manera segura directamente desde la barra lateral del editor. Su objetivo principal es facilitar la organización de información confidencial, como contraseñas, claves API, recordatorios privados y cualquier dato sensible que requiera protección y fácil acceso durante el desarrollo.
 
