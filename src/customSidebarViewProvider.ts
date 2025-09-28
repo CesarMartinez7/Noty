@@ -1,10 +1,9 @@
 // @ts-nocheck
 
 import * as vscode from "vscode";
-import { createClient, User } from "@supabase/supabase-js"; // Importación real (añadida 'User' para tipado)
+import { createClient, User } from "@supabase/supabase-js";
 
 // --- CONFIGURACIÓN DE SUPABASE (CREDENCIALES REALES) ---
-// Usamos tus credenciales reales y mantenemos los nombres de las constantes para el CSP.
 const SUPABASE_URL = "https://fuqaeuyfjgpuaqozsojl.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1cWFldXlmamdwdWFxb3pzb2psIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkwMDMxNzQsImV4cCI6MjA3NDU3OTE3NH0.LHzVFfCV45Oh1XBDFCNoVzLHyUa96xI0PMFTxlyK_0o";
@@ -14,8 +13,11 @@ const SUPABASE_ANON_KEY =
 // Definición de la estructura de una Nota tal como viene de Supabase
 interface Note {
   id: number;
+  // 💡 NUEVO CAMPO: Title
+  title: string;
   content: string;
   created_at: string;
+  user_id: string;
 }
 
 export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
@@ -79,9 +81,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  // --- FEEDBACK AL USUARIO (NUEVO) ---
-
-  /** Envía un mensaje temporal al Webview para mostrar un 'Toast' */
+  // --- FEEDBACK AL USUARIO ---
   private _sendToastMessage(type: "error" | "success", message: string) {
     if (this._view) {
       this._view.webview.postMessage({
@@ -96,7 +96,6 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
   private _setupAuthListener() {
     if (!this._supabaseClient) return;
 
-    // Listener para cambios de estado de autenticación (login, logout, token refresh)
     this._supabaseClient.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
         this._user = session.user;
@@ -142,7 +141,6 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       console.error("[Supabase Auth] Error al iniciar sesión:", error);
       this._sendToastMessage("error", error.message);
     }
-    // _setupAuthListener manejará la actualización si es exitoso.
   }
 
   private async _signOut() {
@@ -156,7 +154,6 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     } else {
       this._sendToastMessage("success", "Sesión cerrada correctamente.");
     }
-    // _setupAuthListener manejará la limpieza del estado.
   }
 
   // --- CONSULTAS ASÍNCRONAS PARA SUPABASE (CRUD) ---
@@ -165,10 +162,11 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
   private async _fetchNotes() {
     if (!this._supabaseClient || !this._user) return;
 
-    // Se asume que el RLS en Supabase filtra por user_id = auth.uid()
+    // 🚀 ACTUALIZACIÓN: Incluir 'title' en la selección
     const { data, error } = await this._supabaseClient
       .from("notes")
-      .select("id, content, created_at")
+      .select("id, title, content, created_at, user_id")
+      .eq("user_id", this._user.id)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -182,19 +180,28 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
   }
 
   // Crear (Añadir) - INSERT
-  private async _addNote(newNote: string) {
-    if (!this._supabaseClient || !this._user || newNote.trim().length === 0)
+  private async _addNote(newTitle: string, newContent: string) {
+    if (!this._supabaseClient || !this._user || newTitle.trim().length === 0) {
+      this._sendToastMessage(
+        "error",
+        "El título de la nota no puede estar vacío."
+      );
       return;
+    }
 
-    const { error } = await this._supabaseClient
-      .from("notes")
-      .insert([{ content: newNote.trim() }]);
+    // 🚀 ACTUALIZACIÓN: Insertar 'title' y 'content'
+    const { error } = await this._supabaseClient.from("notes").insert([
+      {
+        title: newTitle.trim(),
+        content: newContent.trim(),
+        user_id: this._user.id,
+      },
+    ]);
 
     if (error) {
       console.error("[Supabase] Error al añadir nota:", error);
       this._sendToastMessage("error", "Error al crear la nota.");
     } else {
-      // ✅ FIX: Llamar a fetchNotes() para asegurar la sincronización inmediata
       this._fetchNotes();
       this._sendToastMessage("success", "Nota creada y sincronizada.");
     }
@@ -213,33 +220,49 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       console.error("[Supabase] Error al borrar nota:", error);
       this._sendToastMessage("error", "Error al eliminar la nota.");
     } else {
-      // ✅ FIX: Llamar a fetchNotes() para asegurar la sincronización inmediata
       this._fetchNotes();
       this._sendToastMessage("success", "Nota eliminada.");
     }
   }
 
   // Actualizar (Cambiar por input) - UPDATE
-  private async _updateNote(id: number, newValue: string) {
+  private async _updateNote(
+    id: number,
+    field: "title" | "content",
+    newValue: string
+  ) {
     if (!this._supabaseClient || !this._user || !id) return;
 
-    if (newValue.trim().length > 0) {
-      const { error } = await this._supabaseClient
-        .from("notes")
-        .update({ content: newValue.trim() })
-        .eq("id", id); // Condición WHERE
+    // Si el título está vacío, no permitimos la actualización, borramos la nota, o lo evitamos.
+    if (field === "title" && newValue.trim().length === 0) {
+      this._sendToastMessage(
+        "error",
+        "El título no puede estar vacío. La nota no se actualizó."
+      );
+      this._fetchNotes(); // Forzar re-renderizado para restaurar el valor
+      return;
+    }
 
-      if (error) {
-        console.error("[Supabase] Error al actualizar nota:", error);
-        this._sendToastMessage("error", "Error al actualizar la nota.");
-      } else {
-        // ✅ FIX: Llamar a fetchNotes() para asegurar la sincronización inmediata
-        this._fetchNotes();
-        this._sendToastMessage("success", "Nota actualizada.");
-      }
+    // Si el contenido se vacía, podríamos borrar la nota, pero por simplicidad, permitiremos contenido vacío si hay título.
+
+    const updateObject: { [key: string]: string } = {};
+    updateObject[field] = newValue.trim();
+
+    const { error } = await this._supabaseClient
+      .from("notes")
+      .update(updateObject)
+      .eq("id", id); // Condición WHERE
+
+    if (error) {
+      console.error("[Supabase] Error al actualizar nota:", error);
+      this._sendToastMessage("error", "Error al actualizar la nota.");
     } else {
-      // Si el input se vacía, eliminamos la nota
-      this._deleteNote(id);
+      // ✅ FIX: Volver a buscar las notas para que la lista se actualice, aunque el realtime podría hacerlo.
+      this._fetchNotes();
+      this._sendToastMessage(
+        "success",
+        `${field === "title" ? "Título" : "Contenido"} actualizado.`
+      );
     }
   }
 
@@ -247,15 +270,12 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
   private _setupSupabaseListener() {
     if (!this._supabaseClient) return;
 
-    // Suscripción al canal de cambios de la tabla 'notes'
-    // Este listener permanece para recibir cambios de OTROS clientes/dispositivos
     this._supabaseClient
       .channel("notes_channel")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "notes" },
         () => {
-          // Si estamos autenticados, volvemos a obtener las notas (esto es lo que garantiza la sincronización)
           if (this._user) {
             this._fetchNotes();
           }
@@ -290,439 +310,509 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
 
         // Comandos de notas (solo si hay usuario autenticado)
         case "addNote":
-          if (this._user) this._addNote(payload.newNote);
+          if (this._user) this._addNote(payload.newTitle, payload.newContent);
           return;
         case "deleteNote":
           if (this._user) this._deleteNote(parseInt(payload.id));
           return;
-        case "updateNote":
+        case "updateNoteTitle":
           if (this._user)
-            this._updateNote(parseInt(payload.id), payload.newValue);
+            this._updateNote(parseInt(payload.id), "title", payload.newValue);
+          return;
+        case "updateNoteContent":
+          if (this._user)
+            this._updateNote(parseInt(payload.id), "content", payload.newValue);
           return;
       }
     });
   }
 
-  // --- GENERACIÓN DE HTML POR ESTADO ---
+  // --- GENERACIÓN DE HTML DE NOTAS CON BÚSQUEDA ---
 
-  private _getAuthHtml(nonce: string): string {
-    return `
-      <div class="flex flex-col items-center justify-center h-full p-4">
-          <div class="w-full max-w-sm">
-            <h1 class="text-2xl font-bold mb-8 text-center" style="color: var(--vscode-activityBar-foreground);">Supabase Notes App</h1>
-            
-            <div id="auth-message-box" class="p-3 mb-4 w-full text-sm text-center rounded-lg shadow-md hidden transition duration-300" style="background-color: var(--vscode-editor-background); border: 1px solid var(--vscode-input-border);"></div>
-            
-            <form id="auth-form" class="w-full space-y-4">
-                <input type="email" id="auth-email" placeholder="Email" required 
-                    class="note-input w-full" />
-                <input type="password" id="auth-password" placeholder="Contraseña" required 
-                    class="note-input w-full" />
-                
-                <button type="submit" id="sign-in-btn" 
-                    class="w-full p-3 text-white font-semibold rounded-lg shadow-md transition duration-150 ease-in-out hover:opacity-90"
-                    style="background-color: var(--vscode-button-background);">
-                    Iniciar Sesión
-                </button>
-                <button type="button" id="sign-up-btn" 
-                    class="w-full p-3 font-semibold rounded-lg shadow-md transition duration-150 ease-in-out"
-                    style="background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground);">
-                    Registrarse
-                </button>
-            </form>
-          </div>
-      </div>
-      
-      <script nonce="${nonce}">
-          const vscode = acquireVsCodeApi();
-          const form = document.getElementById('auth-form');
-          const emailInput = document.getElementById('auth-email');
-          const passwordInput = document.getElementById('auth-password');
-          const signUpBtn = document.getElementById('sign-up-btn');
-          const msgBox = document.getElementById('auth-message-box');
-
-          function showAuthMessage(type, message) {
-              msgBox.textContent = message;
-              msgBox.classList.remove('hidden');
-              
-              if (type === 'error') {
-                  msgBox.style.backgroundColor = 'var(--vscode-errorForeground)';
-                  msgBox.style.color = 'var(--vscode-editor-background)';
-              } else if (type === 'success') {
-                  msgBox.style.backgroundColor = '#4CAF50';
-                  msgBox.style.color = 'white';
-              }
-              // Ocultar después de un tiempo si es éxito
-              if (type === 'success') {
-                  setTimeout(() => msgBox.classList.add('hidden'), 3000);
-              }
-          }
-          
-          window.addEventListener('message', event => {
-              const message = event.data;
-              if (message.command === 'toast') {
-                  // Muestra el toast en el contexto de autenticación
-                  showAuthMessage(message.payload.type, message.payload.message);
-              }
-          });
-
-          // Iniciar Sesión (Form Submit)
-          form.addEventListener('submit', (e) => {
-              e.preventDefault();
-              const email = emailInput.value;
-              const password = passwordInput.value;
-              
-              if (e.submitter.id === 'sign-in-btn') {
-                msgBox.classList.add('hidden');
-                if (email && password) {
-                    vscode.postMessage({ command: 'signIn', payload: { email, password } });
-                } else {
-                    showAuthMessage('error', 'Por favor, introduce email y contraseña.');
-                }
-              }
-          });
-
-          // Registrarse (Sign Up)
-          signUpBtn.addEventListener('click', () => {
-              const email = emailInput.value;
-              const password = passwordInput.value;
-              msgBox.classList.add('hidden');
-
-              if (email && password) {
-                  vscode.postMessage({ command: 'signUp', payload: { email, password } });
-              } else {
-                  showAuthMessage('error', 'Por favor, introduce email y contraseña para registrarte.');
-              }
-          });
-      </script>
-    `;
-  }
-
-  // ** START: MODIFICACIÓN AQUÍ **
   private _getNotesHtml(nonce: string): string {
     const arrayList = this._notes;
 
-    // Renderiza lista en HTML con botón de borrar y TEXTAREA editables
+    // Renderiza lista en HTML con diseño de tarjeta
     const listHtml = arrayList
       .map(
         (note) => `
-      <li class="note-card-container">
-        <div class="note-card flex flex-col p-3 rounded-lg shadow-lg border border-opacity-20 transition duration-200">
-            <textarea data-id="${note.id}" rows="3" 
-                class="note-textarea flex-grow text-sm p-0 m-0 border-none resize-none focus:ring-0 focus:border-transparent">${
-                  note.content
-                }</textarea>
-            
-            <div class="flex justify-end items-center mt-2 pt-2 border-t border-opacity-30">
-                <span class="text-xs opacity-60 mr-4">Creada: ${new Date(
-                  note.created_at
-                ).toLocaleDateString()}</span>
-                <button class="delete-btn p-1 rounded-full hover:opacity-75" data-id="${
-                  note.id
-                }" title="Borrar Nota">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-trash-2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-                </button>
-            </div>
-        </div>
-      </li>`
+        <li class="note-card-container" data-title="${note.title.toLowerCase()}">
+          <div class="note-card flex flex-col p-4 rounded-lg shadow-xl border border-opacity-80 transition duration-200">
+              
+              <input type="text" data-id="${note.id}" data-field="title" 
+                  class="note-title-input text-lg font-semibold mb-2 p-0 border-none bg-transparent focus:ring-0 focus:border-b-2" 
+                  value="${note.title}" placeholder="Título de la Nota"
+                  style="border-color: var(--vscode-focusBorder);"
+              />
+
+              <textarea data-id="${note.id}" data-field="content" rows="4" 
+                  class="note-textarea flex-grow text-sm p-0 m-0 border-none resize-none bg-transparent focus:ring-0" 
+                  placeholder="Escribe el contenido de tu nota aquí..."
+                  >${note.content}</textarea>
+              
+              <div class="flex justify-between items-center mt-3 pt-3 border-t border-opacity-30">
+                  <span class="text-xs opacity-60 italic" style="color: var(--vscode-list-deemphasizedForeground);">
+                      Creada: ${new Date(note.created_at).toLocaleDateString()}
+                  </span>
+                  <button class="delete-btn p-1 rounded-full hover:opacity-75" data-id="${
+                    note.id
+                  }" title="Borrar Nota">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-trash-2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                  </button>
+              </div>
+          </div>
+        </li>`
       )
       .join("");
 
     return `
-        <div class="flex flex-col h-full relative">
-            <div class="header-bar flex items-center justify-between p-2 mb-4 border-b pb-4 sticky top-0" style="border-color: var(--vscode-editorGroupHeader-tabsBorder); background-color: var(--bg); z-index: 10;">
-                <div class="flex flex-col">
-                    <h1 class="text-xl font-bold" style="color: var(--vscode-activityBar-foreground);">Mis Notas 📌</h1>
-                    <span class="text-xs opacity-70 italic" style="color: var(--vscode-list-deemphasizedForeground);">Bienvenido: ${
-                      this._user?.email || "N/A"
-                    }</span>
-                </div>
-                <button id="sign-out-btn" class="p-2 rounded-lg text-xs font-semibold hover:opacity-80 shadow-md" 
-                    style="background-color: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground);">
-                    Salir
-                </button>
-            </div>
+          <div class="flex flex-col h-full relative">
+              <div class="header-bar flex items-center justify-between p-2 mb-4 pb-4 sticky top-0" style="border-color: var(--vscode-editorGroupHeader-tabsBorder); background-color: var(--bg); z-index: 10;">
+                  <div class="flex flex-col">
+                      <h1 class="text-xl font-bold" style="color: var(--vscode-activityBar-foreground);">Notys <span role="img" aria-label="pin">📌</span></h1>
+                      <span class="text-xs opacity-70 italic" style="color: var(--vscode-list-deemphasizedForeground);">
+                          Bienvenido: ${this._user?.email || "N/A"}
+                      </span>
+                  </div>
+                  <button id="sign-out-btn" class="icon-button" title="Cerrar Sesión">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-log-out"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                  </button>
+              </div>
 
-            <div id="add-note-container" class="flex p-3 mb-6 rounded-lg shadow-xl" style="background-color: var(--vscode-input-background);">
-                <input type="text" id="new-note-input" placeholder="Añadir nueva nota..." 
-                    class="note-input flex-grow p-2 mr-3 text-base" />
-                <button id="add-note-btn" class="text-white p-3 rounded-lg font-bold transition duration-150 ease-in-out hover:opacity-90 shadow-lg" 
-                    style="background-color: var(--vscode-button-background);">
-                    +
-                </button>
-            </div>
+              <div id="search-container" class="mb-4">
+                  <input type="text" id="search-input" placeholder="Buscar notas por título..." 
+                      class="note-input w-full p-2 text-sm" />
+              </div>
 
-            <h2 class="text-sm font-semibold uppercase mb-3 opacity-70">Lista de Notas (${
-              arrayList.length
-            }):</h2>
-            
-            ${
-              arrayList.length === 0
-                ? '<p class="text-sm opacity-50 p-2">No hay notas. Crea una para empezar.</p>'
-                : ""
-            }
-            <ol class="list-none p-0 m-0 grid gap-4 grid-cols-1 md:grid-cols-2">
-              ${listHtml}
-            </ol>
-            
-            <div id="toast-container" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 space-y-2 z-50">
-                </div>
+              <div id="new-note-input-container" class="p-3 mb-6 rounded-lg shadow-inner flex flex-col space-y-3" style="background-color: var(--vscode-input-background);">
+                  <input type="text" id="new-note-title" placeholder="Título de la nueva nota (obligatorio)" 
+                      class="note-input p-2 text-base font-semibold" />
+                  <div class="flex">
+                      <textarea id="new-note-content" placeholder="Contenido..." 
+                          class="note-input flex-grow p-2 mr-3 text-sm resize-none" rows="2"></textarea>
+                      <button id="add-note-btn" class="text-white p-3 rounded-lg font-bold transition duration-150 ease-in-out hover:opacity-90 shadow-lg" 
+                          style="background-color: var(--vscode-button-background); width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="feather feather-plus"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                      </button>
+                  </div>
+              </div>
+
+              <h2 class="text-sm font-semibold uppercase mb-3 opacity-80" style="color: var(--vscode-list-deemphasizedForeground);">
+                  Tus Notas (<span id="note-count">${arrayList.length}</span>):
+              </h2>
+              
+              ${
+                arrayList.length === 0
+                  ? '<p class="text-sm opacity-50 p-2">¡Comienza a crear notas!</p>'
+                  : ""
+              }
+              
+              <ol id="notes-grid" class="list-none  flex-grow overflow-y-auto ">
+                ${listHtml}
+              </ol>
+              
+              <div id="toast-container" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 space-y-2 z-50">
+                  </div>
+          </div>
+
+          <script nonce="${nonce}">
+              const vscode = acquireVsCodeApi();
+
+              // Global Toast Logic
+              function showToast(type, message) {
+                  const container = document.getElementById('toast-container');
+                  if (!container) return;
+                  const toast = document.createElement('div');
+                  toast.className = 'p-3 rounded-lg shadow-xl text-sm transition-all duration-300 opacity-0 transform translate-y-2';
+                  toast.textContent = message;
+                  
+                  if (type === 'error') {
+                      toast.style.backgroundColor = 'var(--vscode-errorForeground)';
+                      toast.style.color = 'var(--vscode-editor-background)';
+                  } else if (type === 'success') {
+                      toast.style.backgroundColor = 'var(--vscode-statusBarItem-remoteBackground)';
+                      toast.style.color = 'var(--vscode-statusBarItem-remoteForeground)';
+                  }
+
+                  container.appendChild(toast);
+                  setTimeout(() => {
+                      toast.style.opacity = '1';
+                      toast.style.transform = 'translateY(0)';
+                  }, 10);
+                  setTimeout(() => {
+                      toast.style.opacity = '0';
+                      toast.style.transform = 'translateY(20px)';
+                      setTimeout(() => {
+                          if(container.contains(toast)) {
+                              container.removeChild(toast);
+                          }
+                      }, 300);
+                  }, 3000);
+              }
+
+              window.addEventListener('message', event => {
+                  const message = event.data;
+                  if (message.command === 'toast') {
+                      showToast(message.payload.type, message.payload.message);
+                  }
+              });
+
+
+              // 1. Añadir Nota (Ahora con Título y Contenido)
+              document.getElementById('add-note-btn').addEventListener('click', () => {
+                  const titleInput = document.getElementById('new-note-title');
+                  const contentInput = document.getElementById('new-note-content');
+                  const newTitle = titleInput.value;
+                  const newContent = contentInput.value;
+                  
+                  if (newTitle.trim()) {
+                      vscode.postMessage({
+                          command: 'addNote',
+                          payload: { newTitle: newTitle, newContent: newContent }
+                      });
+                      titleInput.value = '';
+                      contentInput.value = '';
+                  } else {
+                      showToast('error', 'El título es obligatorio.');
+                  }
+              });
+              
+              // 2. Borrar Nota / 3. Actualizar Nota (usando delegación)
+              const notesGrid = document.getElementById('notes-grid');
+
+              notesGrid.addEventListener('click', (e) => {
+                  const deleteBtn = e.target.closest('.delete-btn');
+                  if (deleteBtn) {
+                      const id = deleteBtn.dataset.id;
+                      vscode.postMessage({
+                          command: 'deleteNote',
+                          payload: { id: id }
+                      });
+                  }
+              });
+
+              // Evento 'blur' para manejar la actualización de Título y Contenido
+              notesGrid.addEventListener('blur', (e) => {
+                  const inputOrTextarea = e.target.closest('.note-title-input, .note-textarea');
+                  if (inputOrTextarea) {
+                      const id = inputOrTextarea.dataset.id;
+                      const field = inputOrTextarea.dataset.field;
+                      const newValue = inputOrTextarea.value;
+                      let command = '';
+                      
+                      if(field === 'title') {
+                          command = 'updateNoteTitle';
+                      } else if (field === 'content') {
+                          command = 'updateNoteContent';
+                      }
+
+                      if (command) {
+                        vscode.postMessage({
+                            command: command,
+                            payload: { id: id, newValue: newValue }
+                        });
+                      }
+                  }
+              }, true); // Usamos 'true' para capturar el evento blur
+
+              // ----------------------------------------------------
+              // 4. Lógica de Búsqueda de Títulos
+              // ----------------------------------------------------
+              const searchInput = document.getElementById('search-input');
+              const noteCards = notesGrid.getElementsByClassName('note-card-container');
+              const noteCountSpan = document.getElementById('note-count');
+
+              searchInput.addEventListener('keyup', () => {
+                  const query = searchInput.value.toLowerCase().trim();
+                  let visibleCount = 0;
+
+                  for (let i = 0; i < noteCards.length; i++) {
+                      const card = noteCards[i];
+                      const noteTitle = card.getAttribute('data-title') || '';
+                      
+                      if (noteTitle.includes(query) || query === '') {
+                          card.style.display = 'block';
+                          visibleCount++;
+                      } else {
+                          card.style.display = 'none';
+                      }
+                  }
+                  
+                  // Actualizar el contador de notas visibles
+                  noteCountSpan.textContent = visibleCount;
+              });
+
+
+              // 5. Salir (Sign Out)
+              document.getElementById('sign-out-btn').addEventListener('click', () => {
+                  vscode.postMessage({ command: 'signOut' });
+              });
+          </script>
+      `;
+  }
+  // --- Generación de HTML de Autenticación (Se mantiene igual) ---
+  private _getAuthHtml(nonce: string): string {
+    return `
+        <div class="flex flex-col items-center justify-center h-full p-4">
+            <div class="w-full max-w-sm">
+              <h1 class="text-2xl font-bold mb-8 text-center flex items-center justify-center space-x-2" 
+                  style="color: var(--vscode-activityBar-foreground);">
+                  <span role="img" aria-label="lock">🔒</span>
+                  <span>Notys Auth</span>
+              </h1>
+              
+              <div id="auth-message-box" class="p-3 mb-4 w-full text-sm text-center rounded-lg shadow-md hidden transition duration-300" style="background-color: var(--vscode-editor-background); border: 1px solid var(--vscode-input-border);"></div>
+              
+              <form id="auth-form" class="w-full space-y-4">
+                  <input type="email" id="auth-email" placeholder="Email" required 
+                      class="note-input w-full" />
+                  <input type="password" id="auth-password" placeholder="Contraseña" required 
+                      class="note-input w-full" />
+                  
+                  <button type="submit" id="sign-in-btn" 
+                      class="w-full p-3 text-white font-bold rounded-lg shadow-lg flex items-center justify-center space-x-2 
+                             transition duration-150 ease-in-out hover:opacity-95"
+                      style="background-image: linear-gradient(to right, var(--vscode-button-background), var(--vscode-terminal-ansiBrightBlue)); 
+                             color: var(--vscode-button-foreground);">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-log-in"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg>
+                      <span>Iniciar Sesión</span>
+                  </button>
+
+                  <button type="button" id="sign-up-btn" 
+                      class="w-full p-3 font-semibold rounded-lg shadow-md flex items-center justify-center space-x-2
+                             transition duration-150 ease-in-out hover:opacity-90 mt-2"
+                      style="background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground);">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-user-plus"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
+                      <span>Registrarse</span>
+                  </button>
+              </form>
+
+              <p class="text-xs text-center mt-6 opacity-60" style="color: var(--vscode-list-deemphasizedForeground);">
+                  Power by Supabase - @CesarMartinez7
+              </p>
+          
+
+            </div>
         </div>
-
+        
         <script nonce="${nonce}">
+// ... (El JavaScript se mantiene exactamente igual ya que solo modificamos el HTML/CSS)
             const vscode = acquireVsCodeApi();
+            const form = document.getElementById('auth-form');
+            const emailInput = document.getElementById('auth-email');
+            const passwordInput = document.getElementById('auth-password');
+            const signUpBtn = document.getElementById('sign-up-btn');
+            const msgBox = document.getElementById('auth-message-box');
 
-            // Global Toast Logic: Muestra mensajes temporales de sincronización/estado
-            function showToast(type, message) {
-                const container = document.getElementById('toast-container');
-                if (!container) return;
-
-                const toast = document.createElement('div');
-                toast.className = 'p-3 rounded-lg shadow-xl text-sm transition-all duration-300 opacity-0 transform translate-y-2';
-                toast.textContent = message;
+            function showAuthMessage(type, message) {
+                msgBox.textContent = message;
+                msgBox.classList.remove('hidden');
                 
-                // Estilos de VS Code para éxito/error
                 if (type === 'error') {
-                    toast.style.backgroundColor = 'var(--vscode-errorForeground)';
-                    toast.style.color = 'var(--vscode-editor-background)';
+                    msgBox.style.backgroundColor = 'var(--vscode-errorForeground)';
+                    msgBox.style.color = 'var(--vscode-editor-background)';
                 } else if (type === 'success') {
-                    // Color de estado para éxito (usando un color de VS Code que indica acción/éxito)
-                    toast.style.backgroundColor = 'var(--vscode-statusBarItem-remoteBackground)';
-                    toast.style.color = 'var(--vscode-statusBarItem-remoteForeground)';
+                    msgBox.style.backgroundColor = '#4CAF50';
+                    msgBox.style.color = 'white';
                 }
-
-                container.appendChild(toast);
-
-                // Mostrar el toast
-                setTimeout(() => {
-                    toast.style.opacity = '1';
-                    toast.style.transform = 'translateY(0)';
-                }, 10); // Pequeño delay para asegurar la transición
-
-                // Ocultar y remover después de 3 segundos
-                setTimeout(() => {
-                    toast.style.opacity = '0';
-                    toast.style.transform = 'translateY(20px)';
-                    setTimeout(() => {
-                        if(container.contains(toast)) {
-                            container.removeChild(toast);
-                        }
-                    }, 300);
-                }, 3000);
+                if (type === 'success') {
+                    setTimeout(() => msgBox.classList.add('hidden'), 3000);
+                }
             }
-
+            
             window.addEventListener('message', event => {
                 const message = event.data;
                 if (message.command === 'toast') {
-                    showToast(message.payload.type, message.payload.message);
+                    showAuthMessage(message.payload.type, message.payload.message);
                 }
             });
 
-
-            // 4. Salir (Sign Out)
-            document.getElementById('sign-out-btn').addEventListener('click', () => {
-                vscode.postMessage({ command: 'signOut' });
-            });
-
-            // 1. Añadir Nota
-            document.getElementById('add-note-btn').addEventListener('click', () => {
-                const input = document.getElementById('new-note-input');
-                const newNote = input.value;
-                if (newNote.trim()) {
-                    vscode.postMessage({
-                        command: 'addNote',
-                        payload: { newNote: newNote }
-                    });
-                    input.value = '';
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const email = emailInput.value;
+                const password = passwordInput.value;
+                
+                if (e.submitter.id === 'sign-in-btn') {
+                  msgBox.classList.add('hidden');
+                  if (email && password) {
+                      vscode.postMessage({ command: 'signIn', payload: { email, password } });
+                  } else {
+                      showAuthMessage('error', 'Por favor, introduce email y contraseña.');
+                  }
                 }
             });
 
-            // 2. Borrar Nota / 3. Actualizar Nota (usando delegación de eventos)
-            document.querySelector('ol').addEventListener('click', (e) => {
-                const deleteBtn = e.target.closest('.delete-btn');
-                if (deleteBtn) {
-                    const id = deleteBtn.dataset.id;
-                    vscode.postMessage({
-                        command: 'deleteNote',
-                        payload: { id: id }
-                    });
+            signUpBtn.addEventListener('click', () => {
+                const email = emailInput.value;
+                const password = passwordInput.value;
+                msgBox.classList.add('hidden');
+
+                if (email && password) {
+                    vscode.postMessage({ command: 'signUp', payload: { email, password } });
+                } else {
+                    showAuthMessage('error', 'Por favor, introduce email y contraseña para registrarte.');
                 }
             });
-
-            // Evento 'blur' (cuando el textarea pierde el foco) para manejar la actualización
-            document.querySelector('ol').addEventListener('blur', (e) => {
-                const textarea = e.target.closest('.note-textarea');
-                if (textarea) {
-                    const id = textarea.dataset.id;
-                    const newValue = textarea.value;
-
-                    // Opcional: Solo enviar si el valor ha cambiado para evitar llamadas innecesarias a la API
-                    // En este ejemplo, enviamos siempre que pierda el foco si estamos en un textarea de nota existente.
-
-                    vscode.postMessage({
-                        command: 'updateNote',
-                        payload: { id: id, newValue: newValue }
-                    });
-                }
-            }, true); // Usamos 'true' para capturar el evento blur en la fase de captura
         </script>
-    `;
+      `;
   }
-  // ** END: MODIFICACIÓN AQUÍ **
 
   private getHtmlContent(webview: vscode.Webview): string {
-    // Definiciones de URI para recursos locales
-    const styleResetUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "assets", "reset.css")
-    );
-    const styleVSCodeUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "assets", "vscode.css")
-    );
-    const stylesheetUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "assets", "main.css")
-    );
-
     const nonce = getNonce();
 
-    // Estado de carga inicial (antes de que Supabase esté listo)
     if (!this._isSupabaseReady) {
       return `<!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <script src="https://cdn.tailwindcss.com"></script>
-                <style>
-                    :root { --bg: var(--vscode-editor-background); --fg: var(--vscode-editor-foreground); }
-                    body { background-color: var(--bg); color: var(--fg); padding: 1rem; font-family: sans-serif; height: 100vh; display: flex; align-items: center; justify-content: center; }
-                </style>
-            </head>
-            <body>
-                <p>Inicializando conexión a Supabase...</p>
-            </body>
-            </html>`;
+              <html lang="en">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <script src="https://cdn.tailwindcss.com"></script>
+                  <style>
+                      :root { --bg: var(--vscode-editor-background); --fg: var(--vscode-editor-foreground); }
+                      body { background-color: var(--bg); color: var(--fg); padding: 1rem; font-family: sans-serif; height: 100vh; display: flex; align-items: center; justify-content: center; }
+                  </style>
+              </head>
+              <body>
+                  <p>Inicializando conexión a Supabase...</p>
+              </body>
+              </html>`;
     }
 
-    // Contenido principal: Notas si está logueado, sino, formulario de autenticación
     const contentHtml = this._user
       ? this._getNotesHtml(nonce)
       : this._getAuthHtml(nonce);
 
     return `<!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${
-        webview.cspSource
-      } 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net; connect-src 'self' ${
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${
+          webview.cspSource
+        } 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net; connect-src 'self' ${
       SUPABASE_URL.replace("https://", "").split("/")[0]
     }">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      
-      <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-      <script nonce="${nonce}" src="https://cdn.tailwindcss.com"></script>
-
-      <link rel="stylesheet" href="https://unpkg.com/modern-css-reset/dist/reset.min.css" />
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-      
-      <style>
-        /* Variables de color de VS Code */
-        :root {
-            --bg: var(--vscode-editor-background);
-            --fg: var(--vscode-editor-foreground);
-            --input-bg: var(--vscode-input-background);
-            --input-border: var(--vscode-input-border);
-            --button-bg: var(--vscode-button-background);
-            --button-hover-bg: var(--vscode-button-hoverBackground);
-            --error-fg: var(--vscode-errorForeground);
-            --list-hover-bg: var(--vscode-list-hoverBackground);
-            --focus-border: var(--vscode-focusBorder);
-        }
-        body {
-            background-color: var(--bg);
-            color: var(--fg);
-            padding: 1rem;
-            font-family: 'Inter', sans-serif; /* Usamos Inter */
-            height: 100vh;
-            overflow-y: auto; /* Permitir scroll si hay muchas notas */
-        }
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         
-        /* Estilos de input compartidos y mejorados */
-        .note-input, #auth-form input {
-            background-color: var(--input-bg);
-            border: 1px solid var(--input-border);
-            color: var(--fg);
-            padding: 0.75rem; 
-            border-radius: 6px; 
-            transition: border-color 0.2s, box-shadow 0.2s;
-            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
-            opacity: 0.9;
-        }
-        .note-input:focus, #auth-form input:focus {
-            outline: none;
-            border-color: var(--focus-border);
-            box-shadow: 0 0 0 1px var(--focus-border);
-            opacity: 1;
-        }
+        <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+        <script nonce="${nonce}" src="https://cdn.tailwindcss.com"></script>
+
+        <link rel="stylesheet" href="https://unpkg.com/modern-css-reset/dist/reset.min.css" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
         
-        /* * START: NUEVOS ESTILOS PARA LA NOTA (TEXTAREA) 
-         */
-        
-        .note-card-container {
-            list-style: none; /* Asegura que no haya viñetas */
-        }
+        <style>
+          /* Variables de color de VS Code */
+          :root {
+              --bg: var(--vscode-editor-background);
+              --fg: var(--vscode-editor-foreground);
+              --input-bg: var(--vscode-input-background);
+              --input-border: var(--vscode-input-border);
+              --button-bg: var(--vscode-button-background);
+              --button-hover-bg: var(--vscode-button-hoverBackground);
+              --error-fg: var(--vscode-errorForeground);
+              --list-hover-bg: var(--vscode-list-hoverBackground);
+              --focus-border: var(--vscode-focusBorder);
+              --accent-color: var(--vscode-terminal-ansiBrightYellow);
+          }
+          body {
+              background-color: var(--bg);
+              color: var(--fg);
+              padding: 1rem;
+              font-family: 'Inter', sans-serif; 
+              height: 100vh;
+              overflow-y: auto; 
+          }
+          
+          /* Estilos de input compartidos y mejorados */
+          .note-input, #auth-form input, #new-note-title, #new-note-content {
+              background-color: var(--input-bg);
+              border: 1px solid var(--input-border);
+              color: var(--fg);
+              padding: 0.45rem; 
+              border-radius: 6px; 
+              transition: border-color 0.2s, box-shadow 0.2s;
+              box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+              opacity: 0.9;
+          }
+          .note-input:focus, #auth-form input:focus, #new-note-title:focus, #new-note-content:focus {
+              outline: none;
+              border-color: var(--focus-border);
+              box-shadow: 0 0 0 1px var(--focus-border);
+              opacity: 1;
+          }
+          
+          /* Estilos para la tarjeta de nota */
+          .note-card-container {
+              list-style: none;
+          }
+          .note-card {
+              background-color: var(--vscode-editorGutter-background);
+              // border-left: 4px solid var(--accent-color); /* Toque de color */
+              transform: none;
+              border-color: var(--focus-border);
+              transition: border-color 0.2s, box-shadow 0.2s;
+              box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+              min-height: 120px;
+          }
+          .note-card:hover {
+              box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+              border-color: var(--focus-border);
+          }
 
-        .note-card {
-            /* Usamos un color ligeramente diferente para simular una nota adhesiva */
-            background-color: var(--vscode-editorGutter-background);
-            border-color: var(--vscode-terminal-ansiBrightYellow); /* Un toque de color */
-            /* Efecto de inclinación sutil para que parezca una nota real */
-            transform: rotate(-0.5deg); 
-            transition: transform 0.2s ease-out, box-shadow 0.2s;
-            position: relative;
-        }
+          /* Input del Título dentro de la nota */
+          .note-title-input {
+              width: 100%;
+              background-color: transparent !important;
+              color: var(--vscode-activityBar-foreground); /* Color más visible */
+              border-bottom: 1px solid transparent !important;
+              padding: 0;
+              margin: 0;
+          }
+          .note-title-input:focus {
+              outline: none;
+              border-color: var(--focus-border) !important; 
+          }
 
-        .note-card:hover {
-            transform: rotate(0deg) scale(1.02);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-            /* Sombra de VS Code para un aspecto moderno */
-            border-color: var(--focus-border); 
-        }
+          /* Textarea del Contenido dentro de la nota */
+          .note-textarea {
+              width: 100%;
+              background-color: transparent;
+              color: var(--fg);
+              border: none;
+              padding: 0;
+              line-height: 1.4;
+              opacity: 0.9;
+              min-height: 70px;
+          }
+          .note-textarea:focus {
+              outline: none;
+              box-shadow: none !important;
+          }
+          
+          .delete-btn {
+              color: var(--error-fg);
+              cursor: pointer;
+              transition: color 0.2s;
+              background-color: transparent;
+              border: none;
+          }
 
-        .note-textarea {
-            /* Limpiamos la apariencia base del textarea */
-            width: 100%;
+          .icon-button {
             background-color: transparent;
-            color: var(--fg);
+            color: var(--vscode-list-deemphasizedForeground);
             border: none;
-            padding: 0;
-            line-height: 1.4;
-            /* La opacidad es importante para que el texto resalte sobre el fondo */
-            opacity: 1;
-        }
-
-        .note-textarea:focus {
-            outline: none;
-            border: none;
-            /* Quitamos el anillo de foco por defecto de Tailwind */
-            box-shadow: none !important;
-        }
-        
-        /* FIN: NUEVOS ESTILOS PARA LA NOTA */
-
-        .delete-btn {
-            color: var(--error-fg);
             cursor: pointer;
-            transition: color 0.2s;
-        }
-      </style>
-    </head>
-    <body>
+            padding: 8px;
+            border-radius: 4px;
+            transition: background-color 0.2s, color 0.2s;
+          }
+        </style>
+      </head>
+      <body>
 
-    ${contentHtml}
+      ${contentHtml}
 
-    </body>
-    </html>`;
+      </body>
+      </html>`;
   }
 }
 
