@@ -67,7 +67,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  // --- Comunicación con el Webview (NUEVO) ---
+  // --- Comunicación con el Webview ---
   private _postState() {
     if (this._view) {
       const payload = {
@@ -97,12 +97,14 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     if (!this._supabaseClient) return;
     this._supabaseClient.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
-        if (!this._user) { // Previene bucles de re-autenticación
+        if (!this._user) {
+          // Previene bucles de re-autenticación
           this._user = session.user;
           this._fetchNotes();
         }
       } else {
-        if (this._user) { // Previene bucles de cierre de sesión
+        if (this._user) {
+          // Previene bucles de cierre de sesión
           this._user = null;
           this._notes = [];
           this._postState();
@@ -181,6 +183,8 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     this._postState();
   }
 
+  // En CustomSidebarViewProvider
+
   private async _addNote(newTitle: string, newContent: string) {
     if (!this._supabaseClient || !this._user || newTitle.trim().length === 0) {
       this._sendToastMessage(
@@ -203,6 +207,8 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       this._sendToastMessage("error", "Error al crear la nota.");
     } else {
       this._sendToastMessage("success", "Nota creada y sincronizada.");
+      // ✨ AÑADIDO: Forzar el refetch para actualizar la lista local
+      this._fetchNotes();
     }
   }
 
@@ -219,6 +225,8 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       this._sendToastMessage("error", "Error al eliminar la nota.");
     } else {
       this._sendToastMessage("success", "Nota eliminada.");
+      // ✨ MODIFICACIÓN: Forzar el refetch para actualizar la lista local
+      this._fetchNotes();
     }
   }
 
@@ -254,6 +262,8 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
         "success",
         `${field === "title" ? "Título" : "Contenido"} actualizado.`
       );
+      // ✨ MODIFICACIÓN: Forzar el refetch para actualizar la lista local
+      this._fetchNotes();
     }
   }
 
@@ -261,6 +271,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
   private _setupSupabaseListener() {
     if (!this._supabaseClient) return;
 
+    // Este listener manejará los cambios provenientes de *otros* clientes
     this._supabaseClient
       .channel("notes_channel")
       .on(
@@ -318,9 +329,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       <html lang="en">
       <head>
         <meta charset="UTF-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${
-          webview.cspSource
-        } 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self' https://fuqaeuyfjgpuaqozsojl.supabase.co">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self' https://fuqaeuyfjgpuaqozsojl.supabase.co">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         
         <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -672,6 +681,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
               }
             });
 
+            // Usamos 'blur' y 'change' para detectar cuando el usuario deja de editar el campo
             notesGrid.addEventListener('blur', (e) => {
               const inputOrTextarea = e.target.closest('.note-title-input, .note-textarea');
               if (inputOrTextarea) {
