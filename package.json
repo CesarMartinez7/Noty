@@ -18,7 +18,6 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:vscodeSidebar.openview",
     "onView:vscodeSidebar.openview"
   ],
   "main": "./out/extension.js",
@@ -43,10 +42,6 @@
       ]
     },
     "commands": [
-      {
-        "command": "vscodeSidebar.openview",
-        "title": "Sidebar View"
-      },
       {
         "command": "vscodeSidebar.menu.view",
         "category": "vscode-extension-sidebar-html",
