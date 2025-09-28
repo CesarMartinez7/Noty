@@ -3,7 +3,7 @@
   "displayName": "Notys",
   "description": "Notys es una extensión ligera y práctica para Visual Studio Code que te permite crear, organizar y gestionar notas directamente desde tu editor. Ideal para desarrolladores que quieren tener apuntes rápidos, recordatorios o snippets siempre a la mano sin salir del flujo de trabajo.",
   "version": "1.0.1",
-  "icon": "./assets/secrets.jpg",
+  "icon": "./assets/secrets.png",
   "publisher": "Develoops",
   "homepage": "https://github.com/CesarMartinez7/SECRETS-NOTE.git",
   "license": "BSD-3-Clause",
