@@ -1,26 +1,16 @@
-# Sample Visual Studio Extension Using WebView View
 
-## Features
+# Noty
 
-Visual Studio Code Sample extension developed to showcase WebView views using WebView API.This extension will be displayed
-in activity bar of VS Code editor, the Sidebar of VS Code editor will have one view loaded with custom UI (Html)
+![](./assets/)
 
-## Requirements
+Noty es una extensión para Visual Studio Code que permite a los usuarios gestionar y almacenar notas secretas de manera segura directamente desde la barra lateral del editor. Su objetivo principal es facilitar la organización de información confidencial, como contraseñas, claves API, recordatorios privados y cualquier dato sensible que requiera protección y fácil acceso durante el desarrollo.
 
-No requirements to build tis project. Clone from GIT and do npm install
+## Características principales
 
+- Interfaz intuitiva en la barra lateral de VS Code.
+- Almacenamiento seguro de notas y secretos.
+- Acceso rápido y organizado a tus notas privadas.
+- Integración visual con el entorno de desarrollo.
+- Soporte para múltiples notas y edición sencilla.
 
-## Release Notes
-
-Sample extension
-
-### 1.0.0
-
-Initial release
-
------------------------------------------------------------------------------------------------------------
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)# SECRETS-NOTE
+Esta extensión está diseñada para mejorar la productividad y la seguridad de los desarrolladores, permitiendo que la información sensible esté siempre disponible pero protegida dentro del editor.
