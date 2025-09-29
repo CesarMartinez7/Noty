@@ -364,26 +364,32 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
           this._signOut();
           return;
         case "addNote":
-          if (this._user) this._addNote(payload.newTitle, payload.newContent);
+          if (this._user) await this._addNote(payload.newTitle, payload.newContent);
           return;
         case "deleteNote":
-          if (this._user) this._deleteNote(parseInt(payload.id));
+          if (this._user) await this._deleteNote(parseInt(payload.id));
           return;
         case "updateNoteTitle":
           if (this._user)
-            this._updateNote(parseInt(payload.id), "title", payload.newValue);
+            await this._updateNote(parseInt(payload.id), "title", payload.newValue);
           return;
         case "updateNoteContent":
           if (this._user)
-            this._updateNote(parseInt(payload.id), "content", payload.newValue);
+            await this._updateNote(parseInt(payload.id), "content", payload.newValue);
           return;
         case "updateNoteColor":
           if (this._user)
-            this._updateNoteColor(parseInt(payload.id), payload.newColor);
+            await this._updateNoteColor(parseInt(payload.id), payload.newColor);
           return;
         case "toggleNoteSecret":
           if (this._user)
-            this._toggleNoteSecret(parseInt(payload.id), payload.isSecret);
+            await this._toggleNoteSecret(parseInt(payload.id), payload.isSecret);
+          return;
+        case "reloadNotes":
+          if (this._user) {
+            this._fetchNotes();
+            this._sendToastMessage("success", "Notas recargadas correctamente.");
+          }
           return;
       }
     });
@@ -448,17 +454,16 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
           }
 
           
-
           .note-card {
-  background: var(--card-bg); /* ← Solo color sólido */
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  transition: transform 0.2s, box-shadow 0.2s;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  overflow: hidden;
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
-}
+            background: var(--card-bg); /* ← Solo color sólido */
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            overflow: hidden;
+            border-top-left-radius: 0;
+            border-top-right-radius: 0;
+          }
 
 
           .note-card:hover {
@@ -540,7 +545,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
           }
           .color-picker::-webkit-color-swatch {
             border: none;
-            border-radius: 6px;
+            border-radius: 6-px;
           }
           .color-picker::-moz-color-swatch {
             border: none;
@@ -740,7 +745,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
                 : \`<textarea data-id="\${note.id}" data-field="content" rows="4" class="\${contentClass}" placeholder="\${placeholder}" aria-label="Contenido de la nota \${note.title}">\${note.content}</textarea>\`;
 
               return \`
-              <li class="note-card-container mb-4" data-title="\${note.title.toLowerCase()}">
+              <li class="note-card-container mb-4" data-id="\${note.id}" data-title="\${note.title.toLowerCase()}">
                 <div class="note-card" style="--note-color: \${note.color || 'var(--focus-border)'};">
                   <div class="note-color-stripe"></div>
                   <div class="note-content-area">
@@ -796,13 +801,20 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
                       Hola, \${user?.email?.split('@')[0] || "usuario"}
                     </span>
                   </div>
-                  <button id="sign-out-btn" class="icon-button" title="Cerrar Sesión" aria-label="Cerrar sesión">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                      <polyline points="16 17 21 12 16 7"></polyline>
-                      <line x1="21" y1="12" x2="9" y2="12"></line>
-                    </svg>
-                  </button>
+                  <div class="flex gap-2">
+                    <button id="reload-notes-btn" class="icon-button" title="Recargar Notas" aria-label="Recargar notas">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21.5 2v6h-6"/><path d="M21.5 2c-2.4 2.8-5 5-9.5 5C7 7 4 5.2 2.5 2"/><path d="M2.5 22v-6h6"/><path d="M2.5 22c2.4-2.8 5-5 9.5-5C17 17 20 18.8 21.5 22"/>
+                      </svg>
+                    </button>
+                    <button id="sign-out-btn" class="icon-button" title="Cerrar Sesión" aria-label="Cerrar sesión">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
 
                 <div id="search-container" class="mb-4">
@@ -836,6 +848,12 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
             document.getElementById('sign-out-btn').addEventListener('click', () => {
               vscode.postMessage({ command: 'signOut' });
             });
+
+            // Recargar Notas
+            document.getElementById('reload-notes-btn').addEventListener('click', () => {
+                vscode.postMessage({ command: 'reloadNotes' });
+            });
+
 
             // Añadir Nota
             document.getElementById('add-note-btn').addEventListener('click', () => {
@@ -882,15 +900,19 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
                 }
             }, true); 
 
+            // Manejar clics de borrar de forma delegada en el contenedor principal
             document.getElementById('notes-list').addEventListener('click', (e) => {
                 const target = e.target.closest('.delete-btn');
                 if (target) {
-                    const id = target.getAttribute('data-id');
+                    const listItem = target.closest('.note-card-container');
+                    const id = listItem.getAttribute('data-id');
                     if (confirm('¿Estás seguro de que quieres borrar esta nota?')) {
                         vscode.postMessage({ command: 'deleteNote', payload: { id } });
                     }
                 }
             });
+
+
           }
 
 
