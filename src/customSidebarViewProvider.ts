@@ -1,6 +1,18 @@
 // @ts-nocheck
 import * as vscode from "vscode";
 import { createClient, User } from "@supabase/supabase-js";
+// import * as path from 'path'; // No se necesita a menos que uses assets locales
+
+// Función de utilidad para generar un valor único (Nonce) para CSP
+function getNonce() {
+  let text = "";
+  const possible =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  for (let i = 0; i < 32; i++) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  }
+  return text;
+}
 
 // --- CONFIGURACIÓN DE SUPABASE (CREDENCIALES REALES) ---
 const SUPABASE_URL = "https://fuqaeuyfjgpuaqozsojl.supabase.co";
@@ -9,13 +21,16 @@ const SUPABASE_ANON_KEY =
 
 // -----------------------------------------------------------
 
-// Definición de la estructura de una Nota tal como viene de Supabase
+// Definición de la estructura de una Nota TAL COMO DEBE VENIR DE SUPABASE
 interface Note {
   id: number;
   title: string;
   content: string;
   created_at: string;
   user_id: string;
+  // ✨ NUEVAS COLUMNAS
+  color: string;
+  is_secret: boolean;
 }
 
 export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
@@ -97,18 +112,26 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     if (!this._supabaseClient) return;
     this._supabaseClient.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
-        if (!this._user) {
-          // Previene bucles de re-autenticación
+        if (!this._user || this._user.id !== session.user.id) {
           this._user = session.user;
           this._fetchNotes();
         }
       } else {
         if (this._user) {
-          // Previene bucles de cierre de sesión
           this._user = null;
           this._notes = [];
           this._postState();
         }
+      }
+    });
+    // Llamada inicial para verificar sesión
+    this._supabaseClient.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        this._user = session.user;
+        this._fetchNotes();
+      } else {
+        this._user = null;
+        this._postState();
       }
     });
   }
@@ -144,9 +167,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       console.error("[Supabase Auth] Error al iniciar sesión:", error);
       this._sendToastMessage("error", error.message);
     } else if (data.user) {
-      this._user = data.user;
       this._sendToastMessage("success", "Sesión iniciada correctamente.");
-      this._fetchNotes();
     }
   }
 
@@ -169,7 +190,7 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
 
     const { data, error } = await this._supabaseClient
       .from("notes")
-      .select("id, title, content, created_at, user_id")
+      .select("id, title, content, created_at, user_id, color, is_secret")
       .eq("user_id", this._user.id)
       .order("created_at", { ascending: false });
 
@@ -182,8 +203,6 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     }
     this._postState();
   }
-
-  // En CustomSidebarViewProvider
 
   private async _addNote(newTitle: string, newContent: string) {
     if (!this._supabaseClient || !this._user || newTitle.trim().length === 0) {
@@ -199,6 +218,8 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
         title: newTitle.trim(),
         content: newContent.trim(),
         user_id: this._user.id,
+        color: "#38a169", // Color por defecto (un verde agradable)
+        is_secret: false,
       },
     ]);
 
@@ -207,7 +228,6 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       this._sendToastMessage("error", "Error al crear la nota.");
     } else {
       this._sendToastMessage("success", "Nota creada y sincronizada.");
-      // ✨ AÑADIDO: Forzar el refetch para actualizar la lista local
       this._fetchNotes();
     }
   }
@@ -218,18 +238,19 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     const { error } = await this._supabaseClient
       .from("notes")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .eq("user_id", this._user.id);
 
     if (error) {
       console.error("[Supabase] Error al borrar nota:", error);
       this._sendToastMessage("error", "Error al eliminar la nota.");
     } else {
       this._sendToastMessage("success", "Nota eliminada.");
-      // ✨ MODIFICACIÓN: Forzar el refetch para actualizar la lista local
       this._fetchNotes();
     }
   }
 
+  // Función genérica para actualizar campos de texto
   private async _updateNote(
     id: number,
     field: "title" | "content",
@@ -252,7 +273,8 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     const { error } = await this._supabaseClient
       .from("notes")
       .update(updateObject)
-      .eq("id", id);
+      .eq("id", id)
+      .eq("user_id", this._user.id);
 
     if (error) {
       console.error("[Supabase] Error al actualizar nota:", error);
@@ -262,7 +284,46 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
         "success",
         `${field === "title" ? "Título" : "Contenido"} actualizado.`
       );
-      // ✨ MODIFICACIÓN: Forzar el refetch para actualizar la lista local
+      this._fetchNotes();
+    }
+  }
+
+  // ✨ FUNCIÓN: Actualizar el color
+  private async _updateNoteColor(id: number, newColor: string) {
+    if (!this._supabaseClient || !this._user || !id) return;
+
+    const { error } = await this._supabaseClient
+      .from("notes")
+      .update({ color: newColor })
+      .eq("id", id)
+      .eq("user_id", this._user.id);
+
+    if (error) {
+      console.error("[Supabase] Error al actualizar color:", error);
+      this._sendToastMessage("error", "Error al cambiar el color.");
+    } else {
+      this._fetchNotes();
+    }
+  }
+
+  // ✨ FUNCIÓN: Alternar el estado secreto
+  private async _toggleNoteSecret(id: number, isSecret: boolean) {
+    if (!this._supabaseClient || !this._user || !id) return;
+
+    const { error } = await this._supabaseClient
+      .from("notes")
+      .update({ is_secret: isSecret })
+      .eq("id", id)
+      .eq("user_id", this._user.id);
+
+    if (error) {
+      console.error("[Supabase] Error al cambiar estado secreto:", error);
+      this._sendToastMessage("error", "Error al cambiar el estado secreto.");
+    } else {
+      this._sendToastMessage(
+        "success",
+        `Nota ${isSecret ? "ocultada" : "mostrada"}.`
+      );
       this._fetchNotes();
     }
   }
@@ -271,7 +332,6 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
   private _setupSupabaseListener() {
     if (!this._supabaseClient) return;
 
-    // Este listener manejará los cambios provenientes de *otros* clientes
     this._supabaseClient
       .channel("notes_channel")
       .on(
@@ -317,6 +377,14 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
           if (this._user)
             this._updateNote(parseInt(payload.id), "content", payload.newValue);
           return;
+        case "updateNoteColor":
+          if (this._user)
+            this._updateNoteColor(parseInt(payload.id), payload.newColor);
+          return;
+        case "toggleNoteSecret":
+          if (this._user)
+            this._toggleNoteSecret(parseInt(payload.id), payload.isSecret);
+          return;
       }
     });
   }
@@ -329,125 +397,196 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
       <html lang="en">
       <head>
         <meta charset="UTF-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self' https://fuqaeuyfjgpuaqozsojl.supabase.co">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self' https://fuqaeuyfjgpuaqozsojl.supabase.co https://cdn.jsdelivr.net">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         
         <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
         <script nonce="${nonce}" src="https://cdn.tailwindcss.com"></script>
         
         <link rel="stylesheet" href="https://unpkg.com/modern-css-reset/dist/reset.min.css" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
         
         <style>
-          /* Variables de color de VS Code */
+          /* Variables de color de VS Code y Setup */
           :root {
-            --bg: var(--vscode-editor-background);
-            --fg: var(--vscode-editor-foreground);
-            --input-bg: var(--vscode-input-background);
-            --input-border: var(--vscode-input-border);
-            --button-bg: var(--vscode-button-background);
-            --button-hover-bg: var(--vscode-button-hoverBackground);
-            --error-fg: var(--vscode-errorForeground);
-            --list-hover-bg: var(--vscode-list-hoverBackground);
-            --focus-border: var(--vscode-focusBorder);
-            --accent-color: var(--vscode-terminal-ansiBrightYellow);
+            --bg: var(--vscode-editor-background, #1e1e1e);
+            --fg: var(--vscode-editor-foreground, #d4d4d4);
+            --input-bg: var(--vscode-input-background, #3c3c3c);
+            --input-border: var(--vscode-input-border, #454545);
+            --button-bg: var(--vscode-button-background, #0e639c);
+            --button-fg: var(--vscode-button-foreground, #ffffff);
+            --focus-border: var(--vscode-focusBorder, #007acc);
+            --card-bg: var(--vscode-editorWidget-background, #252526);
+            --border-color: var(--vscode-editorGroupHeader-tabsBorder, #454545);
           }
+          
           body {
             background-color: var(--bg);
             color: var(--fg);
             padding: 1rem;
-            font-family: 'Inter', sans-serif; 
+            font-family: 'Inter', sans-serif;
             height: 100vh;
-            overflow-y: auto; 
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: var(--focus-border) var(--input-bg);
           }
-          
-          /* Estilos de input compartidos y mejorados */
+
+          /* Estilos para inputs y textareas */
           .note-input, #auth-form input, #new-note-title, #new-note-content {
             background-color: var(--input-bg);
             border: 1px solid var(--input-border);
             color: var(--fg);
-            padding: 0.45rem; 
-            border-radius: 6px; 
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
             transition: border-color 0.2s, box-shadow 0.2s;
-            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
-            opacity: 0.9;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
           }
           .note-input:focus, #auth-form input:focus, #new-note-title:focus, #new-note-content:focus {
             outline: none;
             border-color: var(--focus-border);
-            box-shadow: 0 0 0 1px var(--focus-border);
-            opacity: 1;
-          }
-          
-          /* Estilos para la tarjeta de nota */
-          .note-card-container {
-            list-style: none;
-          }
-          .note-card {
-            background-color: var(--vscode-editorGutter-background);
-            transform: none;
-            border-color: var(--focus-border);
-            transition: border-color 0.2s, box-shadow 0.2s;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-            min-height: 120px;
-          }
-          .note-card:hover {
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-            border-color: var(--focus-border);
+            box-shadow: 0 0 0 2px var(--focus-border);
           }
 
-          /* Input del Título dentro de la nota */
+          
+
+          .note-card {
+  background: var(--card-bg); /* ← Solo color sólido */
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+
+          .note-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+          }
+
+          /* Franja de color en la parte superior */
+          .note-color-stripe {
+            /* ✨ CAMBIO: Mayor altura (12px) */
+            height: 32px; 
+            background-color: var(--note-color, var(--focus-border));
+            /* ✨ CAMBIO: Quitar el radio superior */
+            border-radius: 0; 
+            border-bottom: 1px solid var(--border-color); /* Para darle un mejor acabado */
+          }
+
+          /* Área de contenido de la nota */
+          .note-content-area {
+            padding: 0.75rem 1rem 1rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+          }
+
+          /* Inputs de título y contenido */
           .note-title-input {
-            width: 100%;
-            background-color: transparent !important;
-            color: var(--vscode-activityBar-foreground);
-            border-bottom: 1px solid transparent !important;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--fg);
+            background: transparent;
+            border: none;
             padding: 0;
-            margin: 0;
           }
           .note-title-input:focus {
             outline: none;
-            border-color: var(--focus-border) !important; 
+            border-bottom: 1px solid var(--focus-border);
           }
-
-          /* Textarea del Contenido dentro de la nota */
           .note-textarea {
-            width: 100%;
-            background-color: transparent;
-            color: var(--fg);
-            border: none;
-            padding: 0;
+            font-size: 0.9rem;
             line-height: 1.4;
-            opacity: 0.9;
-            min-height: 70px;
+            color: var(--fg);
+            background: transparent;
+            border: none;
+            resize: none;
+            min-height: 60px;
           }
           .note-textarea:focus {
             outline: none;
-            box-shadow: none !important;
-          }
-          
-          .delete-btn {
-            color: var(--error-fg);
-            cursor: pointer;
-            transition: color 0.2s;
-            background-color: transparent;
-            border: none;
+            border-bottom: 1px solid var(--focus-border);
           }
 
-          .icon-button {
-            background-color: transparent;
-            color: var(--vscode-list-deemphasizedForeground);
+          /* Input secreto */
+          .secret-input {
+            font-size: 1rem;
+            color: var(--vscode-errorForeground);
+            background: transparent;
             border: none;
+            padding: 0;
+            height: 60px;
+            display: flex;
+            align-items: center;
+          }
+          .secret-input::placeholder {
+            color: var(--vscode-list-deemphasizedForeground);
+            opacity: 0.6;
+            font-size: 0.9rem;
+          }
+
+          /* Color picker */
+          .color-picker {
+            border: 1px solid var(--input-border);
+            border-radius: 6px;
             cursor: pointer;
-            padding: 8px;
+            background: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+          }
+          .color-picker::-webkit-color-swatch {
+            border: none;
+            border-radius: 6px;
+          }
+          .color-picker::-moz-color-swatch {
+            border: none;
+            border-radius: 6px;
+          }
+
+          /* Checkbox personalizado */
+          .custom-checkbox {
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border: 1px solid var(--focus-border);
             border-radius: 4px;
-            transition: background-color 0.2s, color 0.2s;
+            cursor: pointer;
+            position: relative;
+            transition: background-color 0.2s;
+          }
+          .custom-checkbox:checked {
+            background-color: var(--focus-border);
+          }
+          .custom-checkbox:checked::after {
+            content: '✓';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: var(--button-fg);
+            font-size: 10px;
+          }
+
+          /* Botones de íconos */
+          .icon-button {
+            background: none;
+            border: none;
+            padding: 0.25rem;
+            cursor: pointer;
+            color: var(--fg);
+            transition: color 0.2s;
+          }
+          .icon-button:hover {
+            color: var(--focus-border);
           }
         </style>
       </head>
       <body>
-        <div id="app-container" class="h-full">
-          </div>
+        <div id="app-container" class="h-full"></div>
         <div id="toast-container" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 space-y-2 z-50"></div>
 
         <script nonce="${nonce}">
@@ -458,15 +597,15 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
             const container = document.getElementById('toast-container');
             if (!container) return;
             const toast = document.createElement('div');
-            toast.className = 'p-3 rounded-lg shadow-xl text-sm transition-all duration-300 opacity-0 transform translate-y-2';
+            toast.className = 'p-3 rounded-lg shadow-lg text-sm transition-all duration-300 opacity-0 transform translate-y-4 max-w-xs';
             toast.textContent = message;
             
             if (type === 'error') {
-              toast.style.backgroundColor = 'var(--vscode-errorForeground)';
-              toast.style.color = 'var(--vscode-editor-background)';
+              toast.style.backgroundColor = 'var(--vscode-errorForeground, #f48771)';
+              toast.style.color = 'var(--vscode-editor-background, #1e1e1e)';
             } else if (type === 'success') {
-              toast.style.backgroundColor = 'var(--vscode-statusBarItem-remoteBackground)';
-              toast.style.color = 'var(--vscode-statusBarItem-remoteForeground)';
+              toast.style.backgroundColor = 'var(--vscode-terminal-ansiGreen, #33ff33)';
+              toast.style.color = 'var(--vscode-editor-background, #1e1e1e)';
             }
 
             container.appendChild(toast);
@@ -478,54 +617,63 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
               toast.style.opacity = '0';
               toast.style.transform = 'translateY(20px)';
               setTimeout(() => {
-                if(container.contains(toast)) {
+                if (container.contains(toast)) {
                   container.removeChild(toast);
                 }
               }, 300);
-            }, 3000);
+            }, 3500);
           }
 
+          // --- HTML Y LÓGICA DE AUTENTICACIÓN ---
           function renderAuthHtml() {
             appContainer.innerHTML = \`
-              <div class="flex flex-col items-center justify-center h-full p-4 backdrop-blur-4xl bg-gradient-to-r to-transparent">
-                  <div class="w-full max-w-sm">
-                      <h1 class="text-2xl font-bold mb-2 text-center flex items-center justify-center space-x-2" 
-                          style="color: var(--vscode-activityBar-foreground);">
-                          <span role="img" aria-label="lock"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M14 18a2 2 0 0 0-4 0m9-7l-2.11-6.657a2 2 0 0 0-2.752-1.148l-1.276.61A2 2 0 0 1 12 4H8.5a2 2 0 0 0-1.925 1.456L5 11m-3 0h20"/><circle cx="17" cy="18" r="3"/><circle cx="7" cy="18" r="3"/></g></svg></span>
-                          <span>Notys</span>
-                      </h1>
-                      <p class="font-light text-xs text-center mb-8" >Tu block de notas seguro</p>
-                      
-                      <div id="auth-message-box" class="p-3 mb-4 w-full text-sm text-center rounded-lg shadow-md hidden transition duration-300" style="background-color: var(--vscode-editor-background); border: 1px solid var(--vscode-input-border);"></div>
-                      
-                      <form id="auth-form" class="w-full space-y-4">
-                          <input type="email" id="auth-email" placeholder="Email" required 
-                              class="note-input w-full" />
-                          <input type="password" id="auth-password" placeholder="Contraseña" required 
-                              class="note-input w-full" />
-                          
-                          <button type="submit" id="sign-in-btn" 
-                              class="w-full p-3 text-white font-bold rounded-lg shadow-lg flex items-center justify-center space-x-2 
-                                      transition duration-150 ease-in-out hover:opacity-95"
-                              style="background-image: linear-gradient(to right, var(--vscode-button-background), var(--vscode-terminal-ansiBrightBlue)); 
-                                      color: var(--vscode-button-foreground);">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-log-in"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg>
-                              <span>Iniciar Sesión</span>
-                          </button>
-
-                          <button type="button" id="sign-up-btn" 
-                              class="w-full p-3 font-semibold rounded-lg shadow-md flex items-center justify-center space-x-2
-                                      transition duration-150 ease-in-out hover:opacity-90 mt-2"
-                              style="background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground);">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-user-plus"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
-                              <span>Registrarse</span>
-                          </button>
-                      </form>
-
-                      <p class="text-xs text-center mt-6 opacity-60" style="color: var(--vscode-list-deemphasizedForeground);">
-                          Power by Supabase - @CesarMartinez7
-                      </p>
+              <div class="flex flex-col items-center justify-center h-full p-6">
+                <div class="w-full max-w-md bg-[var(--card-bg)] rounded-xl shadow-lg p-8">
+                  <div class="flex items-center justify-center mb-6">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--vscode-activityBar-foreground)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M14 18a2 2 0 0 0-4 0m9-7l-2.11-6.657a2 2 0 0 0-2.752-1.148l-1.276.61A2 2 0 0 1 12 4H8.5a2 2 0 0 0-1.925 1.456L5 11m-3 0h20"/>
+                      <circle cx="17" cy="18" r="3"/><circle cx="7" cy="18" r="3"/>
+                    </svg>
+                    <h1 class="text-2xl font-bold ml-2" style="color: var(--vscode-activityBar-foreground);">Notys</h1>
                   </div>
+                  <p class="text-sm text-center mb-8 opacity-70" style="color: var(--vscode-list-deemphasizedForeground);">
+                    Bloc de notas en la nube para VS Code
+                  </p>
+                  
+                  <div id="auth-message-box" class="p-3 mb-6 w-full text-sm text-center rounded-lg hidden" style="background-color: var(--vscode-errorForeground); color: var(--vscode-editor-background);"></div>
+                  
+                  <form id="auth-form" class="space-y-4">
+                    <input type="email" id="auth-email" placeholder="Correo electrónico" required 
+                      class="note-input w-full" aria-label="Correo electrónico"/>
+                    <input type="password" id="auth-password" placeholder="Contraseña" required 
+                      class="note-input w-full" aria-label="Contraseña"/>
+                    
+                    <button type="submit" id="sign-in-btn" 
+                      class="w-full p-3 rounded-lg font-semibold text-[var(--button-fg)] bg-[var(--button-bg)] hover:bg-opacity-90 transition shadow-md flex items-center justify-center gap-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+                        <polyline points="10 17 15 12 10 7"></polyline>
+                        <line x1="15" y1="12" x2="3" y2="12"></line>
+                      </svg>
+                      Iniciar Sesión
+                    </button>
+
+                    <button type="button" id="sign-up-btn" 
+                      class="w-full p-3 rounded-lg font-semibold bg-[var(--input-bg)] text-[var(--fg)] hover:bg-opacity-90 transition shadow-md flex items-center justify-center gap-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="8.5" cy="7" r="4"></circle>
+                        <line x1="20" y1="8" x2="20" y2="14"></line>
+                        <line x1="23" y1="11" x2="17" y2="11"></line>
+                      </svg>
+                      Registrarse
+                    </button>
+                  </form>
+
+                  <p class="text-xs text-center mt-6 opacity-60" style="color: var(--vscode-list-deemphasizedForeground);">
+                    Powered by Supabase
+                  </p>
+                </div>
               </div>
             \`;
 
@@ -543,8 +691,8 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
                 msgBox.style.backgroundColor = 'var(--vscode-errorForeground)';
                 msgBox.style.color = 'var(--vscode-editor-background)';
               } else if (type === 'success') {
-                msgBox.style.backgroundColor = '#4CAF50';
-                msgBox.style.color = 'white';
+                msgBox.style.backgroundColor = 'var(--vscode-terminal-ansiGreen)';
+                msgBox.style.color = 'var(--vscode-editor-background)';
               }
               if (type === 'success') {
                 setTimeout(() => msgBox.classList.add('hidden'), 3000);
@@ -579,166 +727,180 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
             });
           }
 
+          // --- HTML Y LÓGICA DE NOTAS ---
           function renderNotesHtml(user, notes) {
-            const listHtml = notes.map(note => \`
-              <li class="note-card-container" data-title="\${note.title.toLowerCase()}">
-                <div class="note-card flex flex-col p-4 rounded-lg shadow-xl border border-opacity-80 transition duration-200 mb-2">
-                  <input type="text" data-id="\${note.id}" data-field="title" 
-                    class="note-title-input text-lg font-semibold mb-2 p-0 border-none bg-transparent focus:ring-0 focus:border-b-2" 
-                    value="\${note.title}" placeholder="Título de la Nota"
-                    style="border-color: var(--vscode-focusBorder);"
-                  />
-                  <textarea data-id="\${note.id}" data-field="content" rows="4" 
-                    class="note-textarea flex-grow text-sm p-0 m-0 border-none resize-none bg-transparent focus:ring-0" 
-                    placeholder="Escribe el contenido de tu nota aquí..."
-                    >\${note.content}</textarea>
-                  <div class="flex justify-between items-center mt-3">
-                    <span class="text-xs opacity-60 italic" style="color: var(--vscode-list-deemphasizedForeground);">
-                      Creada: \${new Date(note.created_at).toLocaleDateString()}
-                    </span>
-                    <button class="delete-btn p-1 rounded-full hover:opacity-75" data-id="\${note.id}" title="Borrar Nota">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-trash-2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-                    </button>
+            const listHtml = notes.map(note => {
+              const contentType = note.is_secret ? 'password' : 'textarea';
+              const contentValue = note.is_secret ? '**********' : note.content;
+              const contentClass = note.is_secret ? 'secret-input' : 'note-textarea';
+              const placeholder = note.is_secret ? 'Contenido Secreto' : 'Escribe el contenido de tu nota aquí...';
+              
+              const contentInput = note.is_secret 
+                ? \`<input type="password" data-id="\${note.id}" data-field="content" value="\${note.content}" readonly class="secret-input" placeholder="\${placeholder}" title="El contenido está oculto. Edita el secreto para verlo." aria-label="Contenido secreto de la nota \${note.title}"/>\`
+                : \`<textarea data-id="\${note.id}" data-field="content" rows="4" class="\${contentClass}" placeholder="\${placeholder}" aria-label="Contenido de la nota \${note.title}">\${note.content}</textarea>\`;
+
+              return \`
+              <li class="note-card-container mb-4" data-title="\${note.title.toLowerCase()}">
+                <div class="note-card" style="--note-color: \${note.color || 'var(--focus-border)'};">
+                  <div class="note-color-stripe"></div>
+                  <div class="note-content-area">
+                    <input type="text" data-id="\${note.id}" data-field="title" 
+                      class="note-title-input" value="\${note.title}" placeholder="Título de la Nota" 
+                      aria-label="Título de la nota \${note.title}"/>
+                    \${contentInput}
+                    <div class="flex justify-between items-center pt-2 border-t" style="border-color: var(--border-color);">
+                      <div class="flex items-center gap-3">
+                        <input type="color" data-id="\${note.id}" value="\${note.color}" class="color-picker" 
+                          aria-label="Selector de color para la nota \${note.title}"/>
+                        <label class="checkbox-label text-xs flex items-center gap-1 cursor-pointer" 
+                          title="Ocultar contenido como secreto">
+                          <input type="checkbox" data-id="\${note.id}" data-field="is_secret" \${note.is_secret ? 'checked' : ''} 
+                            class="custom-checkbox" aria-label="Alternar secreto para la nota \${note.title}"/>
+                          Secreto
+                        </label>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <span class="text-xs opacity-60" style="color: var(--vscode-list-deemphasizedForeground);">
+                          \${new Date(note.created_at).toLocaleDateString()}
+                        </span>
+                        <button class="delete-btn icon-button" data-id="\${note.id}" title="Borrar Nota" 
+                          aria-label="Eliminar nota \${note.title}">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            <line x1="10" y1="11" x2="10" y2="17"></line>
+                            <line x1="14" y1="11" x2="14" y2="17"></line>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </li>
-            \`).join('');
+              \`;
+            }).join('');
 
             appContainer.innerHTML = \`
-              <div class="flex flex-col h-full relative">
-                <div class="header-bar flex items-center justify-between p-2 mb-4 pb-4 sticky top-0" style="border-color: var(--vscode-editorGroupHeader-tabsBorder); background-color: var(--bg); z-index: 10;">
+              <div class="flex flex-col h-full">
+                <div class="header-bar flex items-center justify-between mb-4 pb-3 border-b" style="border-color: var(--border-color); background-color: var(--bg);">
                   <div class="flex flex-col">
-                    <h1 class="text-xl font-bold" style="color: var(--vscode-activityBar-foreground);">Notys <span role="img" aria-label="pin"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M11.25 16.25h1.5L12 17zM16 14v.5"/><path d="M4.42 11.247A13.2 13.2 0 0 0 4 14.556C4 18.728 7.582 21 12 21s8-2.272 8-6.444a11.7 11.7 0 0 0-.493-3.309M8 14v.5"/><path d="M8.5 8.5c-.384 1.05-1.083 2.028-2.344 2.5c-1.931.722-3.576-.297-3.656-1c-.113-.994 1.177-6.53 4-7c1.923-.321 3.651.845 3.651 2.235A7.5 7.5 0 0 1 14 5.277c0-1.39 1.844-2.598 3.767-2.277c2.823.47 4.113 6.006 4 7c-.08.703-1.725 1.722-3.656 1c-1.261-.472-1.855-1.45-2.239-2.5"/></g></svg></span></h1>
-                    <span class="text-xs opacity-70 italic" style="color: var(--vscode-list-deemphasizedForeground);">
-                      Bienvenido: \${user?.email || "N/A"}
+                    <h1 class="text-xl font-bold flex items-center gap-2" style="color: var(--vscode-activityBar-foreground);">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M11.25 16.25h1.5L12 17zM16 14v.5"/>
+                        <path d="M4.42 11.247A13.2 13.2 0 0 0 4 14.556C4 18.728 7.582 21 12 21s8-2.272 8-6.444a11.7 11.7 0 0 0-.493-3.309M8 14v.5"/>
+                        <path d="M8.5 8.5c-.384 1.05-1.083 2.028-2.344 2.5c-1.931.722-3.576-.297-3.656-1c-.113-.994 1.177-6.53 4-7c1.923-.321 3.651.845 3.651 2.235A7.5 7.5 0 0 1 14 5.277c0-1.39 1.844-2.598 3.767-2.277c2.823.47 4.113 6.006 4 7c-.08.703-1.725 1.722-3.656 1c-1.261-.472-1.855-1.45-2.239-2.5"/>
+                      </svg>
+                      Notys
+                    </h1>
+                    <span class="text-xs opacity-70 mt-1" style="color: var(--vscode-list-deemphasizedForeground);">
+                      Hola, \${user?.email?.split('@')[0] || "usuario"}
                     </span>
                   </div>
-                  <button id="sign-out-btn" class="icon-button" title="Cerrar Sesión">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-log-out"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                  <button id="sign-out-btn" class="icon-button" title="Cerrar Sesión" aria-label="Cerrar sesión">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                      <polyline points="16 17 21 12 16 7"></polyline>
+                      <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
                   </button>
                 </div>
 
                 <div id="search-container" class="mb-4">
-                  <input type="text" id="search-input" placeholder="Buscar notas por título..." 
-                    class="note-input w-full p-2 text-sm" />
+                  <input type="text" id="search-input" placeholder="Buscar notas por título o contenido..." 
+                    class="note-input w-full p-2 text-sm" aria-label="Buscar notas"/>
                 </div>
 
-                <div id="new-note-input-container" class="p-3 mb-6 rounded-lg shadow-inner flex flex-col space-y-3" style="background-color: var(--vscode-input-background);">
+                <div id="new-note-input-container" class="p-4 mb-6 rounded-lg shadow-inner bg-[var(--card-bg)]">
                   <input type="text" id="new-note-title" placeholder="Título de la nueva nota (obligatorio)" 
-                    class="note-input p-2 text-base font-semibold" />
-                  <div class="flex">
-                    <textarea id="new-note-content" placeholder="Contenido..." 
-                      class="note-input flex-grow p-2 mr-3 text-sm resize-none" rows="2"></textarea>
-                    <button id="add-note-btn" class="text-white p-3 rounded-lg font-bold transition duration-150 ease-in-out hover:opacity-90 shadow-lg" 
-                      style="background-color: var(--vscode-button-background); width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="feather feather-plus"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                    </button>
-                  </div>
+                    class="note-input w-full mb-3" aria-label="Título de la nueva nota"/>
+                  <textarea id="new-note-content" placeholder="Contenido de la nueva nota (opcional)" 
+                    class="note-input w-full mb-3 resize-y" rows="3" aria-label="Contenido de la nueva nota"></textarea>
+                  <button id="add-note-btn"
+                    class="w-full p-2 rounded-lg font-semibold text-[var(--button-fg)] bg-[var(--focus-border)] hover:bg-opacity-90 transition shadow-md flex items-center justify-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    Guardar Nota
+                  </button>
                 </div>
-
-                <h2 class="text-sm font-semibold uppercase mb-3 opacity-80" style="color: var(--vscode-list-deemphasizedForeground);">
-                  Tus Notas (<span id="note-count">\${notes.length}</span>):
-                </h2>
                 
-                \${notes.length === 0 ? '<p class="text-sm opacity-50 p-2">¡Comienza a crear notas!</p>' : ""}
-                
-                <ol id="notes-grid" class="list-none flex-grow overflow-y-auto ">
-                  \${listHtml}
-                </ol>
+                <ul id="notes-list" class="flex-grow overflow-y-auto space-y-4 pt-2">
+                  \${notes.length === 0 ? '<p class="text-center opacity-70 mt-10">No tienes notas todavía. ¡Crea la primera!</p>' : listHtml}
+                </ul>
               </div>
             \`;
 
-            const notesGrid = document.getElementById('notes-grid');
-            const searchInput = document.getElementById('search-input');
-            const noteCountSpan = document.getElementById('note-count');
-
-            document.getElementById('add-note-btn').addEventListener('click', () => {
-              const titleInput = document.getElementById('new-note-title');
-              const contentInput = document.getElementById('new-note-content');
-              const newTitle = titleInput.value;
-              const newContent = contentInput.value;
-              
-              if (newTitle.trim()) {
-                vscode.postMessage({
-                  command: 'addNote',
-                  payload: { newTitle: newTitle, newContent: newContent }
-                });
-                titleInput.value = '';
-                contentInput.value = '';
-              } else {
-                showToast('error', 'El título es obligatorio.');
-              }
-            });
+            // --- Lógica de Eventos para Notas ---
             
-            notesGrid.addEventListener('click', (e) => {
-              const deleteBtn = e.target.closest('.delete-btn');
-              if (deleteBtn) {
-                const id = deleteBtn.dataset.id;
-                vscode.postMessage({
-                  command: 'deleteNote',
-                  payload: { id: id }
-                });
-              }
-            });
-
-            // Usamos 'blur' y 'change' para detectar cuando el usuario deja de editar el campo
-            notesGrid.addEventListener('blur', (e) => {
-              const inputOrTextarea = e.target.closest('.note-title-input, .note-textarea');
-              if (inputOrTextarea) {
-                const id = inputOrTextarea.dataset.id;
-                const field = inputOrTextarea.dataset.field;
-                const newValue = inputOrTextarea.value;
-                let command = '';
-                
-                if(field === 'title') {
-                  command = 'updateNoteTitle';
-                } else if (field === 'content') {
-                  command = 'updateNoteContent';
-                }
-
-                if (command) {
-                  vscode.postMessage({
-                    command: command,
-                    payload: { id: id, newValue: newValue }
-                  });
-                }
-              }
-            }, true);
-
-            searchInput.addEventListener('keyup', () => {
-              const query = searchInput.value.toLowerCase().trim();
-              const noteCards = notesGrid.getElementsByClassName('note-card-container');
-              let visibleCount = 0;
-
-              for (let i = 0; i < noteCards.length; i++) {
-                const card = noteCards[i];
-                const noteTitle = card.getAttribute('data-title') || '';
-                
-                if (noteTitle.includes(query) || query === '') {
-                  card.style.display = 'block';
-                  visibleCount++;
-                } else {
-                  card.style.display = 'none';
-                }
-              }
-              
-              noteCountSpan.textContent = visibleCount;
-            });
-
+            // Cerrar Sesión
             document.getElementById('sign-out-btn').addEventListener('click', () => {
               vscode.postMessage({ command: 'signOut' });
             });
+
+            // Añadir Nota
+            document.getElementById('add-note-btn').addEventListener('click', () => {
+              const newTitle = document.getElementById('new-note-title').value;
+              const newContent = document.getElementById('new-note-content').value;
+              vscode.postMessage({ command: 'addNote', payload: { newTitle, newContent } });
+              // Limpiar campos
+              document.getElementById('new-note-title').value = '';
+              document.getElementById('new-note-content').value = '';
+            });
+
+            // Buscar Notas
+            document.getElementById('search-input').addEventListener('input', (e) => {
+                const query = e.target.value.toLowerCase();
+                document.querySelectorAll('.note-card-container').forEach(item => {
+                    const title = item.getAttribute('data-title');
+                    // Comprobar también el contenido (aunque solo se indexa por título)
+                    const content = item.querySelector('.note-textarea')?.value.toLowerCase() || '';
+                    const isVisible = title.includes(query) || content.includes(query);
+                    item.style.display = isVisible ? 'block' : 'none';
+                });
+            });
+
+
+            // Eventos delegados para todas las notas
+            document.getElementById('notes-list').addEventListener('change', (e) => {
+                const target = e.target;
+                const id = target.getAttribute('data-id');
+
+                if (target.matches('.color-picker')) {
+                    vscode.postMessage({ command: 'updateNoteColor', payload: { id, newColor: target.value } });
+                } else if (target.matches('.custom-checkbox')) {
+                    vscode.postMessage({ command: 'toggleNoteSecret', payload: { id, isSecret: target.checked } });
+                }
+            });
+
+            document.getElementById('notes-list').addEventListener('blur', (e) => {
+                const target = e.target;
+                const id = target.getAttribute('data-id');
+                const field = target.getAttribute('data-field');
+
+                if (field && (target.matches('.note-title-input') || target.matches('.note-textarea'))) {
+                    vscode.postMessage({ command: \`updateNote\${field === 'title' ? 'Title' : 'Content'}\`, payload: { id, newValue: target.value } });
+                }
+            }, true); 
+
+            document.getElementById('notes-list').addEventListener('click', (e) => {
+                const target = e.target.closest('.delete-btn');
+                if (target) {
+                    const id = target.getAttribute('data-id');
+                    if (confirm('¿Estás seguro de que quieres borrar esta nota?')) {
+                        vscode.postMessage({ command: 'deleteNote', payload: { id } });
+                    }
+                }
+            });
           }
 
+
+          // --- MANEJADOR DE MENSAJES PRINCIPAL ---
           window.addEventListener('message', event => {
             const message = event.data;
-            switch(message.command) {
+            switch (message.command) {
               case 'updateState':
-                const payload = message.payload;
-                if (!payload.isReady) {
-                  appContainer.innerHTML = \`<p>Inicializando conexión a Supabase...</p>\`;
-                } else if (payload.isAuthenticated) {
-                  renderNotesHtml(payload.user, payload.notes);
+                if (message.payload.isAuthenticated) {
+                  renderNotesHtml(message.payload.user, message.payload.notes);
                 } else {
                   renderAuthHtml();
                 }
@@ -748,21 +910,12 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
                 break;
             }
           });
-          
+
+          // Notifica a la extensión que el webview está listo para recibir el estado inicial
           vscode.postMessage({ command: 'ready' });
 
         </script>
       </body>
       </html>`;
   }
-}
-
-function getNonce() {
-  let text = "";
-  const possible =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
 }
