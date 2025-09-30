@@ -292,6 +292,20 @@ export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private _donwloadAllNotes = () => {
+    const data = this._fetchNotes();
+
+    // MI instancia de blob
+    const myBLob = new Blob([data], { type: "application/json" });
+    // Generaamos mi url para el objecto blob descargable que despues se le va a pasar con href al HTMLAnchorElement
+    const blobUrl = URL.revokeObjectURL(myBLob);
+    //https://developer.mozilla.org/es/docs/Web/API/URL/revokeObjectURL_static
+
+    const elementDownload: HTMLAnchorElement = document.createElement("a");
+    elementDownload.href = blobUrl;
+    elementDownload.download = `${this._user}_data.txt`;
+  };
+
   private async _toggleNoteSecret(id: number, isSecret: boolean) {
     if (!this._supabaseClient || !this._user || !id) return;
     const { error } = await this._supabaseClient
