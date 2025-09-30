@@ -1,42 +1,42 @@
-# Welcome to your VS Code Extension
+# Notys Quickstart
 
-## What's in the folder
+This project is a Visual Studio Code extension that adds a custom sidebar using HTML. The extension is structured for easy development and testing.
 
-* This folder contains all of the files necessary for your extension.
-* `package.json` - this is the manifest file in which you declare your extension and command.
-  * The sample plugin registers a command and defines its title and command name. With this information VS Code can show the command in the command palette. It doesn’t yet need to load the plugin.
-* `src/extension.ts` - this is the main file where you will provide the implementation of your command.
-  * The file exports one function, `activate`, which is called the very first time your extension is activated (in this case by executing the command). Inside the `activate` function we call `registerCommand`.
-  * We pass the function containing the implementation of the command as the second parameter to `registerCommand`.
+## Folder Structure
 
-## Get up and running straight away
+- `package.json` — Extension manifest, defines commands and contributions.
+- `src/extension.ts` — Main entry point. Handles activation and command registration.
+- `src/sidebar.ts` — Implements the sidebar webview using HTML.
+- `media/` — Static assets (CSS, images, JS) for the sidebar UI.
+- `test/` — Contains automated tests for your extension.
 
-* Press `F5` to open a new window with your extension loaded.
-* Run your command from the command palette by pressing (`Ctrl+Shift+P` or `Cmd+Shift+P` on Mac) and typing `Hello World`.
-* Set breakpoints in your code inside `src/extension.ts` to debug your extension.
-* Find output from your extension in the debug console.
+## Getting Started
 
-## Make changes
+1. **Install dependencies**  
+   Run `npm install` in the project root.
 
-* You can relaunch the extension from the debug toolbar after changing code in `src/extension.ts`.
-* You can also reload (`Ctrl+R` or `Cmd+R` on Mac) the VS Code window with your extension to load your changes.
+2. **Launch the extension**  
+   Press `F5` in VS Code to open a new window with your extension loaded.
 
+3. **Open the sidebar**  
+   Use the command palette (`Ctrl+Shift+P` or `Cmd+Shift+P` on Mac) and type your extension's command to show the sidebar.
 
-## Explore the API
+## Development Workflow
 
-* You can open the full set of our API when you open the file `node_modules/@types/vscode/index.d.ts`.
+- Edit `src/extension.ts` and `src/sidebar.ts` to update extension logic or sidebar UI.
+- Reload the extension window (`Ctrl+R` or `Cmd+R` on Mac) to see changes.
+- Use breakpoints and the debug console for troubleshooting.
 
-## Run tests
+## Testing
 
-* Open the debug viewlet (`Ctrl+Shift+D` or `Cmd+Shift+D` on Mac) and from the launch configuration dropdown pick `Extension Tests`.
-* Press `F5` to run the tests in a new window with your extension loaded.
-* See the output of the test result in the debug console.
-* Make changes to `src/test/suite/extension.test.ts` or create new test files inside the `test/suite` folder.
-  * The provided test runner will only consider files matching the name pattern `**.test.ts`.
-  * You can create folders inside the `test` folder to structure your tests any way you want.
+- Open the debug view (`Ctrl+Shift+D` or `Cmd+Shift+D` on Mac).
+- Select `Extension Tests` from the launch configuration dropdown.
+- Press `F5` to run tests.
+- Add or modify tests in `test/suite/extension.test.ts`.
 
-## Go further
+## Resources
 
- * Reduce the extension size and improve the startup time by [bundling your extension](https://code.visualstudio.com/api/working-with-extensions/bundling-extension).
- * [Publish your extension](https://code.visualstudio.com/api/working-with-extensions/publishing-extension) on the VSCode extension marketplace.
- * Automate builds by setting up [Continuous Integration](https://code.visualstudio.com/api/working-with-extensions/continuous-integration).
+- [VS Code Extension API Reference](https://code.visualstudio.com/api)
+- [Bundling Extensions](https://code.visualstudio.com/api/working-with-extensions/bundling-extension)
+- [Publishing Extensions](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)
+- [Continuous Integration](https://code.visualstudio.com/api/working-with-extensions/continuous-integration)

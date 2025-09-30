@@ -1,6 +1,8 @@
 // @ts-nocheck
 import * as vscode from "vscode";
 import { createClient, User } from "@supabase/supabase-js";
+import { Note } from "./types/types";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./utils/entornos";
 
 // Función de utilidad para generar un valor único (Nonce) para CSP
 function getNonce() {
@@ -11,22 +13,6 @@ function getNonce() {
     text += possible.charAt(Math.floor(Math.random() * possible.length));
   }
   return text;
-}
-
-// --- CONFIGURACIÓN DE SUPABASE (CREDENCIALES REALES) ---
-const SUPABASE_URL = "https://fuqaeuyfjgpuaqozsojl.supabase.co";
-const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1cWFldXlmamdwdWFxb3pzb2psIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkwMDMxNzQsImV4cCI6MjA3NDU3OTE3NH0.LHzVFfCV45Oh1XBDFCNoVzLHyUa96xI0PMFTxlyK_0o";
-
-// --- DEFINICIÓN DE LA ESTRUCTURA DE UNA NOTA ---
-interface Note {
-  id: number;
-  title: string;
-  content: string;
-  created_at: string;
-  user_id: string;
-  color: string;
-  is_secret: boolean;
 }
 
 export class CustomSidebarViewProvider implements vscode.WebviewViewProvider {
